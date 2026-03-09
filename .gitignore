@@ -77,10 +77,9 @@ ipython_config.py
 # pyenv
 .python-version
 
-# Environments
+# Environments (virtual environments, not our env/ module)
 .env
 .venv
-env/
 venv/
 ENV/
 env.bak/
