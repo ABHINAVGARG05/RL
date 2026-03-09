@@ -57,6 +57,11 @@ class Server:
     current_cpu_usage: float = field(default=0.0, repr=False)
     total_tasks_processed: int = field(default=0, repr=False)
     total_latency: int = field(default=0, repr=False)
+
+    def __post_init__(self) -> None:
+        """Validate initialization values."""
+        if self.cpu_capacity <= 0:
+            raise ValueError("cpu_capacity must be greater than 0")
     
     @property
     def queue_length(self) -> int:
