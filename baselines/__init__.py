@@ -1,14 +1,6 @@
-"""
-Baseline Schedulers Module
+from baselines.heuristics import RandomBaseline
+from baselines.heuristics import FirstFitBaseline
+from baselines.heuristics import BestFitBaseline
+from baselines.heuristics import GreedyPriorityBaseline
 
-This module contains baseline scheduling algorithms for comparison:
-- RandomScheduler: Randomly assigns tasks to servers
-- RoundRobinScheduler: Cycles through servers sequentially
-- LeastQueueScheduler: Assigns to server with shortest queue
-"""
-
-from baselines.random_policy import RandomScheduler
-from baselines.round_robin import RoundRobinScheduler
-from baselines.least_queue import LeastQueueScheduler
-
-__all__ = ['RandomScheduler', 'RoundRobinScheduler', 'LeastQueueScheduler']
+__all__ = ['RandomBaseline', 'FirstFitBaseline', 'BestFitBaseline', 'GreedyPriorityBaseline']
