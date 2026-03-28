@@ -102,6 +102,9 @@ class DQNAgent:
         next_states_t = torch.FloatTensor(next_states).to(self.device)
         dones_t       = torch.FloatTensor(dones).to(self.device)
 
+        # ← Normalise rewards to zero-mean unit-variance per batch
+        rewards_t = (rewards_t - rewards_t.mean()) / (rewards_t.std() + 1e-8)
+
         current_q = self.online_net(states_t).gather(1, actions_t.unsqueeze(1)).squeeze(1)
 
         with torch.no_grad():
@@ -116,7 +119,6 @@ class DQNAgent:
         self.optimizer.step()
 
         self.epsilon = max(self.epsilon_end, self.epsilon - self.epsilon_decay)
-
         self.steps += 1
         if self.steps % self.target_update_freq == 0:
             self.target_net.load_state_dict(self.online_net.state_dict())

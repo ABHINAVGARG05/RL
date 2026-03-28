@@ -59,7 +59,8 @@ class ResourceAllocationEnv(gym.Env):
                 cpu_util = 1 - (self.cpu_free[m] / self.cpu_capacity)
                 mem_util = 1 - (self.mem_free[m] / self.mem_capacity)
                 efficiency = (cpu_util + mem_util) / 2
-                reward = job_priority * (1.0 + efficiency)
+                # ← Normalise: keep priority influence but cap reward magnitude
+                reward = job_priority * (0.5 + 0.5 * efficiency)  # range: [0.5, 1.5] × priority
                 info["event"] = "allocated"
                 info["machine"] = m
             else:

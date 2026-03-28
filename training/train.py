@@ -25,19 +25,18 @@ CONFIG = {
     "eval_every": 100,
     "eval_episodes": 20,
 
-    "lr": 1e-3,
+    "lr": 2e-4,                    # ← was 1e-3 (too high, causes Q explosion)
     "gamma": 0.99,
     "epsilon_start": 1.0,
     "epsilon_end": 0.05,
-    "epsilon_decay_steps": 30_000,
+    "epsilon_decay_steps": 120_000,
     "batch_size": 64,
-    "buffer_capacity": 50_000,
-    "target_update_freq": 500,
+    "buffer_capacity": 100_000,     
+    "target_update_freq": 1000,     
     "hidden": 256,
 
     "save_path": "checkpoints/dqn_resource.pt",
 }
-
 
 def make_env(seed=None):
     return ResourceAllocationEnv(
