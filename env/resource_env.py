@@ -3,14 +3,15 @@ import gymnasium as gym
 from gymnasium import spaces
 from typing import Optional
 
+
 class ResourceAllocationEnv(gym.Env):
     metadata = {"render_modes": ["human"]}
 
     def __init__(
         self,
         n_machines: int = 4,
-        cpu_capacity: float = 16.0,  
-        mem_capacity: float = 64.0,   
+        cpu_capacity: float = 16.0,
+        mem_capacity: float = 64.0,
         max_jobs_per_ep: int = 200,
         rejection_penalty: float = -2.0,
         sla_breach_penalty: float = -5.0,
@@ -59,8 +60,9 @@ class ResourceAllocationEnv(gym.Env):
                 cpu_util = 1 - (self.cpu_free[m] / self.cpu_capacity)
                 mem_util = 1 - (self.mem_free[m] / self.mem_capacity)
                 efficiency = (cpu_util + mem_util) / 2
-                # ← Normalise: keep priority influence but cap reward magnitude
-                reward = job_priority * (0.5 + 0.5 * efficiency)  # range: [0.5, 1.5] × priority
+                # Normalise: keep priority influence but cap reward magnitude
+                # efficiency ∈ [0, 1], so (0.5 + 0.5 * efficiency) ∈ [0.5, 1.0]
+                reward = job_priority * (0.5 + 0.5 * efficiency)  # range: [0.5, 1.0] × priority
                 info["event"] = "allocated"
                 info["machine"] = m
             else:
@@ -87,7 +89,9 @@ class ResourceAllocationEnv(gym.Env):
         job_cpu_norm = np.array([self.current_job[0] / self.cpu_capacity])
         job_mem_norm = np.array([self.current_job[1] / self.mem_capacity])
         job_pri_norm = np.array([self.current_job[2] / 3.0])
-        return np.concatenate([cpu_norm, mem_norm, job_cpu_norm, job_mem_norm, job_pri_norm]).astype(np.float32)
+        return np.concatenate(
+            [cpu_norm, mem_norm, job_cpu_norm, job_mem_norm, job_pri_norm]
+        ).astype(np.float32)
 
     def utilization(self):
         cpu_util = 1 - self.cpu_free.mean() / self.cpu_capacity

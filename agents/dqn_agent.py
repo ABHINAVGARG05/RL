@@ -6,6 +6,49 @@ from typing import Optional
 
 from utils.replay_buffer import ReplayBuffer
 
+
+class RunningNormalizer:
+    """
+    Welford online algorithm for computing a running mean and variance.
+
+    Tracks statistics across all rewards seen so far, giving a stable,
+    consistent normalization signal regardless of batch composition.
+    Unlike per-batch normalization, the same raw reward always maps to
+    the same normalized value (given the global history), which keeps
+    Bellman targets consistent across updates.
+    """
+
+    def __init__(self):
+        self.count = 0
+        self.mean  = 0.0
+        self.M2    = 0.0   # sum of squared deviations from the mean
+
+    def update(self, x: float):
+        """Update running stats with a single new reward value."""
+        self.count += 1
+        delta      = x - self.mean
+        self.mean += delta / self.count
+        self.M2   += delta * (x - self.mean)
+
+    @property
+    def std(self) -> float:
+        """Population std dev; returns 1.0 until at least 2 samples seen."""
+        if self.count < 2:
+            return 1.0
+        return max((self.M2 / (self.count - 1)) ** 0.5, 1e-8)
+
+    def normalize(self, x: float) -> float:
+        return (x - self.mean) / self.std
+
+    def state_dict(self) -> dict:
+        return {"count": self.count, "mean": self.mean, "M2": self.M2}
+
+    def load_state_dict(self, d: dict):
+        self.count = d.get("count", 0)
+        self.mean  = d.get("mean",  0.0)
+        self.M2    = d.get("M2",    0.0)
+
+
 class DuelingDQN(nn.Module):
     """
     Dueling DQN: separates state-value V(s) and advantage A(s,a).
@@ -32,11 +75,12 @@ class DuelingDQN(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        feat = self.shared(x)
-        value = self.value_stream(feat)
+        feat      = self.shared(x)
+        value     = self.value_stream(feat)
         advantage = self.advantage_stream(feat)
         q = value + advantage - advantage.mean(dim=1, keepdim=True)
         return q
+
 
 class DQNAgent:
     def __init__(
@@ -50,17 +94,17 @@ class DQNAgent:
         epsilon_decay_steps: int = 20_000,
         batch_size: int = 64,
         buffer_capacity: int = 50_000,
-        target_update_freq: int = 500,      
+        target_update_freq: int = 500,
         hidden: int = 256,
         device: Optional[str] = None,
     ):
-        self.n_actions = n_actions
-        self.gamma = gamma
-        self.batch_size = batch_size
+        self.n_actions         = n_actions
+        self.gamma             = gamma
+        self.batch_size        = batch_size
         self.target_update_freq = target_update_freq
 
-        self.epsilon = epsilon_start
-        self.epsilon_end = epsilon_end
+        self.epsilon       = epsilon_start
+        self.epsilon_end   = epsilon_end
         self.epsilon_decay = (epsilon_start - epsilon_end) / epsilon_decay_steps
 
         self.device = torch.device(
@@ -73,11 +117,12 @@ class DQNAgent:
         self.target_net.eval()
 
         self.optimizer = optim.Adam(self.online_net.parameters(), lr=lr)
-        self.loss_fn = nn.SmoothL1Loss()
+        self.loss_fn   = nn.SmoothL1Loss()
 
-        self.memory = ReplayBuffer(buffer_capacity)
-        self.steps = 0
-        self.last_loss = 0.0
+        self.memory            = ReplayBuffer(buffer_capacity)
+        self.reward_normalizer = RunningNormalizer()
+        self.steps             = 0
+        self.last_loss         = 0.0
 
     def select_action(self, state: np.ndarray) -> int:
         if np.random.random() < self.epsilon:
@@ -88,6 +133,9 @@ class DQNAgent:
         return int(q.argmax(dim=1).item())
 
     def store(self, state, action, reward, next_state, done):
+        # Update running stats before the transition enters the buffer so
+        # the normalizer always has at least as much history as the buffer.
+        self.reward_normalizer.update(reward)
         self.memory.push(state, action, reward, next_state, done)
 
     def update(self) -> float:
@@ -98,18 +146,30 @@ class DQNAgent:
 
         states_t      = torch.FloatTensor(states).to(self.device)
         actions_t     = torch.LongTensor(actions).to(self.device)
-        rewards_t     = torch.FloatTensor(rewards).to(self.device)
         next_states_t = torch.FloatTensor(next_states).to(self.device)
         dones_t       = torch.FloatTensor(dones).to(self.device)
 
-        # ← Normalise rewards to zero-mean unit-variance per batch
-        rewards_t = (rewards_t - rewards_t.mean()) / (rewards_t.std() + 1e-8)
+        # Normalise with the global running mean/std (Welford).
+        # The same raw reward always maps to the same normalised value,
+        # keeping Bellman targets consistent across updates and preventing
+        # sign flips that per-batch normalisation can introduce.
+        rewards_t = torch.FloatTensor(
+            [self.reward_normalizer.normalize(r) for r in rewards]
+        ).to(self.device)
 
-        current_q = self.online_net(states_t).gather(1, actions_t.unsqueeze(1)).squeeze(1)
+        current_q = (
+            self.online_net(states_t)
+            .gather(1, actions_t.unsqueeze(1))
+            .squeeze(1)
+        )
 
         with torch.no_grad():
             next_actions = self.online_net(next_states_t).argmax(dim=1)
-            next_q = self.target_net(next_states_t).gather(1, next_actions.unsqueeze(1)).squeeze(1)
+            next_q       = (
+                self.target_net(next_states_t)
+                .gather(1, next_actions.unsqueeze(1))
+                .squeeze(1)
+            )
             target_q = rewards_t + self.gamma * next_q * (1 - dones_t)
 
         loss = self.loss_fn(current_q, target_q)
@@ -119,7 +179,7 @@ class DQNAgent:
         self.optimizer.step()
 
         self.epsilon = max(self.epsilon_end, self.epsilon - self.epsilon_decay)
-        self.steps += 1
+        self.steps  += 1
         if self.steps % self.target_update_freq == 0:
             self.target_net.load_state_dict(self.online_net.state_dict())
 
@@ -127,13 +187,17 @@ class DQNAgent:
         return self.last_loss
 
     def save(self, path: str):
-        torch.save({
-            "online": self.online_net.state_dict(),
-            "target": self.target_net.state_dict(),
-            "optimizer": self.optimizer.state_dict(),
-            "epsilon": self.epsilon,
-            "steps": self.steps,
-        }, path)
+        torch.save(
+            {
+                "online":     self.online_net.state_dict(),
+                "target":     self.target_net.state_dict(),
+                "optimizer":  self.optimizer.state_dict(),
+                "epsilon":    self.epsilon,
+                "steps":      self.steps,
+                "normalizer": self.reward_normalizer.state_dict(),
+            },
+            path,
+        )
         print(f"[DQN] Saved checkpoint → {path}")
 
     def load(self, path: str):
@@ -142,5 +206,7 @@ class DQNAgent:
         self.target_net.load_state_dict(ckpt["target"])
         self.optimizer.load_state_dict(ckpt["optimizer"])
         self.epsilon = ckpt["epsilon"]
-        self.steps = ckpt["steps"]
+        self.steps   = ckpt["steps"]
+        if "normalizer" in ckpt:
+            self.reward_normalizer.load_state_dict(ckpt["normalizer"])
         print(f"[DQN] Loaded checkpoint ← {path}")
