@@ -174,15 +174,16 @@ class ResourceAllocationEnv(gym.Env):
             [cpu_norm, mem_norm, job_cpu_norm, job_mem_norm, job_pri_norm]
         ).astype(np.float32)
 
-    # ------------------------------------------------------------------ #
-    #  Metrics & rendering                                                 #
-    # ------------------------------------------------------------------ #
-
     def utilization(self) -> dict:
-        """Current mean utilization across all machines."""
+        """Current utilization — aggregate and per-machine."""
         cpu_util = 1.0 - self.cpu_free.mean() / self.cpu_capacity
         mem_util = 1.0 - self.mem_free.mean() / self.mem_capacity
-        return {"cpu": float(cpu_util), "mem": float(mem_util)}
+        return {
+            "cpu": float(cpu_util),
+            "mem": float(mem_util),
+            "cpu_per_machine": (1.0 - self.cpu_free / self.cpu_capacity).tolist(),
+            "mem_per_machine": (1.0 - self.mem_free / self.mem_capacity).tolist(),
+        }
 
     def episode_stats(self) -> dict:
         """Aggregate counters for the current episode so far."""

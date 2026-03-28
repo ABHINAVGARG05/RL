@@ -47,10 +47,12 @@ def make_env(seed=None):
         seed=seed,
     )
 
-
 def evaluate_agent(agent: DQNAgent, n_episodes: int = 20) -> dict:
     env = make_env(seed=42)
+    n_machines = CONFIG["n_machines"]
     rewards, cpu_utils, mem_utils = [], [], []
+    cpu_per = [[] for _ in range(n_machines)]
+    mem_per = [[] for _ in range(n_machines)]
     for _ in range(n_episodes):
         obs, _ = env.reset()
         ep_reward = 0.0
@@ -63,17 +65,26 @@ def evaluate_agent(agent: DQNAgent, n_episodes: int = 20) -> dict:
         u = env.utilization()
         cpu_utils.append(u["cpu"])
         mem_utils.append(u["mem"])
+        for i in range(n_machines):
+            cpu_per[i].append(u["cpu_per_machine"][i])
+            mem_per[i].append(u["mem_per_machine"][i])
     return {
         "reward_mean": np.mean(rewards),
-        "reward_std": np.std(rewards),
-        "cpu_util": np.mean(cpu_utils),
-        "mem_util": np.mean(mem_utils),
+        "reward_std":  np.std(rewards),
+        "cpu_util":    np.mean(cpu_utils),
+        "mem_util":    np.mean(mem_utils),
+        "cpu_per_machine": [np.mean(cpu_per[i]) for i in range(n_machines)],
+        "mem_per_machine": [np.mean(mem_per[i]) for i in range(n_machines)],
     }
 
 
+# AFTER
 def evaluate_baseline(baseline, n_episodes: int = 50) -> dict:
     env = make_env(seed=42)
+    n_machines = CONFIG["n_machines"]
     rewards, cpu_utils, mem_utils = [], [], []
+    cpu_per = [[] for _ in range(n_machines)]
+    mem_per = [[] for _ in range(n_machines)]
     for _ in range(n_episodes):
         obs, _ = env.reset()
         ep_reward = 0.0
@@ -86,11 +97,16 @@ def evaluate_baseline(baseline, n_episodes: int = 50) -> dict:
         u = env.utilization()
         cpu_utils.append(u["cpu"])
         mem_utils.append(u["mem"])
+        for i in range(n_machines):
+            cpu_per[i].append(u["cpu_per_machine"][i])
+            mem_per[i].append(u["mem_per_machine"][i])
     return {
         "reward_mean": np.mean(rewards),
-        "reward_std": np.std(rewards),
-        "cpu_util": np.mean(cpu_utils),
-        "mem_util": np.mean(mem_utils),
+        "reward_std":  np.std(rewards),
+        "cpu_util":    np.mean(cpu_utils),
+        "mem_util":    np.mean(mem_utils),
+        "cpu_per_machine": [np.mean(cpu_per[i]) for i in range(n_machines)],
+        "mem_per_machine": [np.mean(mem_per[i]) for i in range(n_machines)],
     }
 
 def train():
@@ -150,10 +166,14 @@ def train():
             metrics = evaluate_agent(agent, CONFIG["eval_episodes"])
             eval_rewards.append(metrics["reward_mean"])
             eval_steps.append(ep)
+            cpu_per_str = "  ".join(f"M{i}={v:.0%}" for i, v in enumerate(metrics["cpu_per_machine"]))
+            mem_per_str = "  ".join(f"M{i}={v:.0%}" for i, v in enumerate(metrics["mem_per_machine"]))
             print(
                 f"\n  [EVAL @ ep {ep}] "
                 f"Reward={metrics['reward_mean']:.1f} ± {metrics['reward_std']:.1f}  "
-                f"CPU util={metrics['cpu_util']:.1%}  MEM util={metrics['mem_util']:.1%}\n"
+                f"CPU util={metrics['cpu_util']:.1%}  MEM util={metrics['mem_util']:.1%}"
+                f"\n    CPU/machine: {cpu_per_str}"
+                f"\n    MEM/machine: {mem_per_str}\n"
             )
             agent.save(CONFIG["save_path"])
 
@@ -162,17 +182,35 @@ def train():
     print("="*60)
 
     final_dqn = evaluate_agent(agent, 50)
-    print(f"  DQN (ours)       : reward={final_dqn['reward_mean']:.2f}  cpu={final_dqn['cpu_util']:.1%}  mem={final_dqn['mem_util']:.1%}")
+    _print_algo_result("DQN (ours)", final_dqn)
 
     baselines = [FirstFitBaseline(), BestFitBaseline(), GreedyPriorityBaseline(), RandomBaseline()]
     baseline_results = {}
     for bl in baselines:
         r = evaluate_baseline(bl)
         baseline_results[bl.name] = r
-        print(f"  {bl.name:<16} : reward={r['reward_mean']:.2f}  cpu={r['cpu_util']:.1%}  mem={r['mem_util']:.1%}")
+        _print_algo_result(bl.name, r)
 
     _plot_results(ep_rewards, eval_steps, eval_rewards, final_dqn, baseline_results)
     print("\nTraining complete. Plots saved to training/plots/")
+
+    # baselines = [FirstFitBaseline(), BestFitBaseline(), GreedyPriorityBaseline(), RandomBaseline()]
+    # baseline_results = {}
+    # for bl in baselines:
+    #     r = evaluate_baseline(bl)
+    #     baseline_results[bl.name] = r
+    #     print(f"  {bl.name:<16} : reward={r['reward_mean']:.2f}  cpu={r['cpu_util']:.1%}  mem={r['mem_util']:.1%}")
+
+    # _plot_results(ep_rewards, eval_steps, eval_rewards, final_dqn, baseline_results)
+    # print("\nTraining complete. Plots saved to training/plots/")
+
+
+def _print_algo_result(name, r):
+    cpu_per_str = "  ".join(f"M{i}={v:.0%}" for i, v in enumerate(r["cpu_per_machine"]))
+    mem_per_str = "  ".join(f"M{i}={v:.0%}" for i, v in enumerate(r["mem_per_machine"]))
+    print(f"  {name:<16} : reward={r['reward_mean']:.2f}  cpu={r['cpu_util']:.1%}  mem={r['mem_util']:.1%}")
+    print(f"  {'':16}   CPU/machine: {cpu_per_str}")
+    print(f"  {'':16}   MEM/machine: {mem_per_str}")
 
 
 def _plot_results(ep_rewards, eval_steps, eval_rewards, dqn_result, baseline_results):
