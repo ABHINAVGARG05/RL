@@ -48,8 +48,9 @@ def make_env(seed=None, dataset_loader=None):
         dataset_loader = dataset_loader
     )
 
-def evaluate_agent(agent: DQNAgent, n_episodes: int = 20) -> dict:
-    env = make_env(seed=42)
+def evaluate_agent(agent: DQNAgent, dataset_loader, n_episodes: int = 20) -> dict:
+    dataset_loader.reset()
+    env = make_env(seed=42, dataset_loader=dataset_loader)
     n_machines = CONFIG["n_machines"]
     rewards, cpu_utils, mem_utils = [], [], []
     cpu_per = [[] for _ in range(n_machines)]
@@ -80,8 +81,9 @@ def evaluate_agent(agent: DQNAgent, n_episodes: int = 20) -> dict:
 
 
 # AFTER
-def evaluate_baseline(baseline, n_episodes: int = 50) -> dict:
-    env = make_env(seed=42)
+def evaluate_baseline(baseline, dataset_loader, n_episodes: int = 50) -> dict:
+    dataset_loader.reset()
+    env = make_env(seed=42, dataset_loader=dataset_loader)
     n_machines = CONFIG["n_machines"]
     rewards, cpu_utils, mem_utils = [], [], []
     cpu_per = [[] for _ in range(n_machines)]
@@ -112,14 +114,20 @@ def evaluate_baseline(baseline, n_episodes: int = 50) -> dict:
 
 def train():
 
-    borg_loader = BorgDatasetLoader(
+    borg_train_loader = BorgDatasetLoader(
+        file_path = "data/borg_trace_subset.csv",
+        scale_cpu = CONFIG["cpu_capacity"],
+        scale_mem = CONFIG["mem_capacity"]
+    )
+    
+    borg_eval_loader = BorgDatasetLoader(
         file_path = "data/borg_trace_subset.csv",
         scale_cpu = CONFIG["cpu_capacity"],
         scale_mem = CONFIG["mem_capacity"]
     )
 
     os.makedirs("checkpoints", exist_ok=True)
-    env = make_env(dataset_loader = borg_loader)
+    env = make_env(dataset_loader = borg_train_loader)
     obs_dim = env.observation_space.shape[0]
     n_actions = env.action_space.n
 
@@ -171,7 +179,7 @@ def train():
         logger.log_episode(ep_reward, avg_loss, agent.epsilon)
 
         if ep % CONFIG["eval_every"] == 0:
-            metrics = evaluate_agent(agent, CONFIG["eval_episodes"])
+            metrics = evaluate_agent(agent, borg_eval_loader, CONFIG["eval_episodes"])
             eval_rewards.append(metrics["reward_mean"])
             eval_steps.append(ep)
             cpu_per_str = "  ".join(f"M{i}={v:.0%}" for i, v in enumerate(metrics["cpu_per_machine"]))
@@ -189,13 +197,13 @@ def train():
     print("  Final Benchmark vs Baselines")
     print("="*60)
 
-    final_dqn = evaluate_agent(agent, 50)
+    final_dqn = evaluate_agent(agent, borg_eval_loader, 50)
     _print_algo_result("DQN (ours)", final_dqn)
 
     baselines = [FirstFitBaseline(), BestFitBaseline(), GreedyPriorityBaseline(), RandomBaseline()]
     baseline_results = {}
     for bl in baselines:
-        r = evaluate_baseline(bl)
+        r = evaluate_baseline(bl, borg_eval_loader)
         baseline_results[bl.name] = r
         _print_algo_result(bl.name, r)
 

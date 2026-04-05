@@ -91,8 +91,8 @@ class ResourceAllocationEnv(gym.Env):
         self._n_sla_breach = 0
         self._n_completed = 0
 
-        if self.dataset_loader is not None:
-            self.dataset_loader.reset()
+        # if self.dataset_loader is not None:
+        #     self.dataset_loader.reset()
 
         self.current_job = self._generate_job()
         return self._obs(), {}
@@ -117,12 +117,14 @@ class ResourceAllocationEnv(gym.Env):
 
                 duration = self.current_job_duration
 
-                self.slots[m].append(JobSlot(
-                    cpu_used=job_cpu,
-                    mem_used=job_mem,
-                    priority=job_priority,
-                    ttl=duration,
-                ))
+                self.slots[m].append(
+                    JobSlot(
+                        cpu_used=job_cpu,
+                        mem_used=job_mem,
+                        priority=job_priority,
+                        ttl=duration,
+                    )
+                )
 
                 cpu_util = 1.0 - (self.cpu_free[m] / self.cpu_capacity)
                 mem_util = 1.0 - (self.mem_free[m] / self.mem_capacity)
@@ -194,7 +196,7 @@ class ResourceAllocationEnv(gym.Env):
         job_mem_norm = np.array(
             [self.current_job[1] / self.mem_capacity], dtype=np.float32
         )
-        job_pri_norm = np.array([self.current_job[2] / 3.0], dtype=np.float32)
+        job_pri_norm = np.array([self.current_job[2] / 11.0], dtype=np.float32)
         return np.concatenate(
             [cpu_norm, mem_norm, job_cpu_norm, job_mem_norm, job_pri_norm]
         ).astype(np.float32)
