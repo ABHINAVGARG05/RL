@@ -11,7 +11,7 @@ class JobSlot:
     cpu_used: float
     mem_used: float
     priority: float
-    ttl: int            # steps remaining until job completes and frees resources
+    ttl: int  # steps remaining until job completes and frees resources
 
 
 class ResourceAllocationEnv(gym.Env):
@@ -28,24 +28,25 @@ class ResourceAllocationEnv(gym.Env):
         rejection_penalty: float = 0.5,
         sla_breach_penalty: float = 2.0,
         seed: Optional[int] = None,
+        dataset_loader=None,
     ):
         super().__init__()
 
         assert n_machines >= 1, "Need at least one machine."
         assert cpu_capacity > 0 and mem_capacity > 0
         assert job_min_duration >= 1 and job_max_duration >= job_min_duration
-        assert rejection_penalty >= 0 and sla_breach_penalty >= 0, (
-            "Pass positive magnitudes; signs are applied internally."
-        )
+        assert (
+            rejection_penalty >= 0 and sla_breach_penalty >= 0
+        ), "Pass positive magnitudes; signs are applied internally."
 
-        self.n_machines          = n_machines
-        self.cpu_capacity        = cpu_capacity
-        self.mem_capacity        = mem_capacity
-        self.max_jobs            = max_jobs_per_ep
-        self.job_min_duration    = job_min_duration
-        self.job_max_duration    = job_max_duration
-        self.rejection_penalty   = rejection_penalty   # magnitude
-        self.sla_breach_penalty  = sla_breach_penalty  # magnitude (flat)
+        self.n_machines = n_machines
+        self.cpu_capacity = cpu_capacity
+        self.mem_capacity = mem_capacity
+        self.max_jobs = max_jobs_per_ep
+        self.job_min_duration = job_min_duration
+        self.job_max_duration = job_max_duration
+        self.rejection_penalty = rejection_penalty  # magnitude
+        self.sla_breach_penalty = sla_breach_penalty  # magnitude (flat)
 
         self.rng = np.random.default_rng(seed)
 
@@ -57,7 +58,7 @@ class ResourceAllocationEnv(gym.Env):
 
         self.cpu_free: np.ndarray = np.empty(0)
         self.mem_free: np.ndarray = np.empty(0)
-        self.slots: list[Optional[JobSlot]] = []
+        self.slots: list[list[JobSlot]] = []
         self.current_job: np.ndarray = np.empty(0)
         self.jobs_processed: int = 0
         self.total_reward: float = 0.0
@@ -66,6 +67,9 @@ class ResourceAllocationEnv(gym.Env):
         self._n_rejected: int = 0
         self._n_sla_breach: int = 0
         self._n_completed: int = 0
+
+        self.dataset_loader = dataset_loader
+        self.current_job_duration = 0
 
         self.reset()
 
@@ -76,15 +80,18 @@ class ResourceAllocationEnv(gym.Env):
 
         self.cpu_free = np.full(self.n_machines, self.cpu_capacity, dtype=np.float32)
         self.mem_free = np.full(self.n_machines, self.mem_capacity, dtype=np.float32)
-        self.slots: list[Optional[JobSlot]] = [None] * self.n_machines
+        self.slots: list[list[JobSlot]] = [[] for _ in range(self.n_machines)]
 
         self.jobs_processed = 0
-        self.total_reward   = 0.0
+        self.total_reward = 0.0
 
-        self._n_allocated  = 0
-        self._n_rejected   = 0
+        self._n_allocated = 0
+        self._n_rejected = 0
         self._n_sla_breach = 0
-        self._n_completed  = 0
+        self._n_completed = 0
+
+        # if self.dataset_loader is not None:
+        #     self.dataset_loader.reset()
 
         self.current_job = self._generate_job()
         return self._obs(), {}
@@ -107,22 +114,23 @@ class ResourceAllocationEnv(gym.Env):
                 self.cpu_free[m] -= job_cpu
                 self.mem_free[m] -= job_mem
 
-                duration = int(self.rng.integers(
-                    self.job_min_duration, self.job_max_duration + 1
-                ))
-                self.slots[m] = JobSlot(
-                    cpu_used=job_cpu,
-                    mem_used=job_mem,
-                    priority=job_priority,
-                    ttl=duration,
+                duration = self.current_job_duration
+
+                self.slots[m].append(
+                    JobSlot(
+                        cpu_used=job_cpu,
+                        mem_used=job_mem,
+                        priority=job_priority,
+                        ttl=duration,
+                    )
                 )
 
                 cpu_util = 1.0 - (self.cpu_free[m] / self.cpu_capacity)
                 mem_util = 1.0 - (self.mem_free[m] / self.mem_capacity)
                 efficiency = (cpu_util + mem_util) / 2.0
                 reward = job_priority * (0.5 + 0.5 * efficiency)
-                info["event"]    = "allocated"
-                info["machine"]  = m
+                info["event"] = "allocated"
+                info["machine"] = m
                 info["duration"] = duration
                 self._n_allocated += 1
 
@@ -140,36 +148,54 @@ class ResourceAllocationEnv(gym.Env):
 
         return self._obs(), reward, done, False, info
 
-
     def _tick_jobs(self):
         """Decrement TTL on every running job; free resources on completion."""
         for m in range(self.n_machines):
-            slot = self.slots[m]
-            if slot is None:
-                continue
-            slot.ttl -= 1
-            if slot.ttl <= 0:
-                self.cpu_free[m] += slot.cpu_used
-                self.mem_free[m] += slot.mem_used
-                self.cpu_free[m] = min(self.cpu_free[m], self.cpu_capacity)
-                self.mem_free[m] = min(self.mem_free[m], self.mem_capacity)
-                self.slots[m] = None
-                self._n_completed += 1
+            active_jobs = []
+            for slot in self.slots[m]:
+                slot.ttl -= 1
+                if slot.ttl <= 0:
+                    self.cpu_free[m] += slot.cpu_used
+                    self.mem_free[m] += slot.mem_used
+                    self.cpu_free[m] = min(self.cpu_free[m], self.cpu_capacity)
+                    self.mem_free[m] = min(self.mem_free[m], self.mem_capacity)
+                    self._n_completed += 1
+                else:
+                    active_jobs.append(slot)
+            self.slots[m] = active_jobs
 
     def _generate_job(self) -> np.ndarray:
-        """Sample a new job's resource requirements and priority."""
-        cpu_req  = float(self.rng.uniform(0.5, self.cpu_capacity * 0.4))
-        mem_req  = float(self.rng.uniform(1.0, self.mem_capacity * 0.4))
-        priority = float(self.rng.choice([1.0, 2.0, 3.0], p=[0.50, 0.35, 0.15]))
-        return np.array([cpu_req, mem_req, priority], dtype=np.float32)
+        if self.dataset_loader is not None:
+            job_features, duration = self.dataset_loader.next_job()
+            self.current_job_duration = duration
+            return job_features
+        else:
+            cpu_req = float(self.rng.uniform(0.5, self.cpu_capacity * 0.4))
+            mem_req = float(self.rng.uniform(1.0, self.mem_capacity * 0.4))
+            priority = float(self.rng.choice([1.0, 2.0, 3.0], p=[0.50, 0.35, 0.15]))
+
+            self.current_job_duration = int(
+                self.rng.integers(self.job_min_duration, self.job_max_duration + 1)
+            )
+            return np.array([cpu_req, mem_req, priority], dtype=np.float32)
+
+        # """Sample a new job's resource requirements and priority."""
+        # cpu_req  = float(self.rng.uniform(0.5, self.cpu_capacity * 0.4))
+        # mem_req  = float(self.rng.uniform(1.0, self.mem_capacity * 0.4))
+        # priority = float(self.rng.choice([1.0, 2.0, 3.0], p=[0.50, 0.35, 0.15]))
+        # return np.array([cpu_req, mem_req, priority], dtype=np.float32)
 
     def _obs(self) -> np.ndarray:
         """Build the normalised observation vector."""
-        cpu_norm     = self.cpu_free / self.cpu_capacity
-        mem_norm     = self.mem_free / self.mem_capacity
-        job_cpu_norm = np.array([self.current_job[0] / self.cpu_capacity],  dtype=np.float32)
-        job_mem_norm = np.array([self.current_job[1] / self.mem_capacity],  dtype=np.float32)
-        job_pri_norm = np.array([self.current_job[2] / 3.0],               dtype=np.float32)
+        cpu_norm = self.cpu_free / self.cpu_capacity
+        mem_norm = self.mem_free / self.mem_capacity
+        job_cpu_norm = np.array(
+            [self.current_job[0] / self.cpu_capacity], dtype=np.float32
+        )
+        job_mem_norm = np.array(
+            [self.current_job[1] / self.mem_capacity], dtype=np.float32
+        )
+        job_pri_norm = np.array([self.current_job[2] / 11.0], dtype=np.float32)
         return np.concatenate(
             [cpu_norm, mem_norm, job_cpu_norm, job_mem_norm, job_pri_norm]
         ).astype(np.float32)
@@ -190,20 +216,20 @@ class ResourceAllocationEnv(gym.Env):
         total = max(self.jobs_processed, 1)
         return {
             "jobs_processed": self.jobs_processed,
-            "allocated":      self._n_allocated,
-            "rejected":       self._n_rejected,
-            "sla_breaches":   self._n_sla_breach,
+            "allocated": self._n_allocated,
+            "rejected": self._n_rejected,
+            "sla_breaches": self._n_sla_breach,
             "jobs_completed": self._n_completed,
-            "placement_rate": self._n_allocated  / total,
-            "breach_rate":    self._n_sla_breach / total,
-            "rejection_rate": self._n_rejected   / total,
-            "total_reward":   self.total_reward,
+            "placement_rate": self._n_allocated / total,
+            "breach_rate": self._n_sla_breach / total,
+            "rejection_rate": self._n_rejected / total,
+            "total_reward": self.total_reward,
         }
 
     def render(self):
-        u    = self.utilization()
-        job  = self.current_job
-        busy = sum(1 for s in self.slots if s is not None)
+        u = self.utilization()
+        job = self.current_job
+        busy = sum(1 for s in self.slots if len(s) > 0)
         print(
             f"[Jobs {self.jobs_processed:4d}/{self.max_jobs}] "
             f"CPU={u['cpu']:.1%}  MEM={u['mem']:.1%}  "
