@@ -8,7 +8,6 @@ from dataclasses import dataclass, field
 @dataclass
 class JobSlot:
     """Tracks a running job occupying a machine slot."""
-
     cpu_used: float
     mem_used: float
     priority: float
@@ -141,7 +140,7 @@ class ResourceAllocationEnv(gym.Env):
                 self._n_sla_breach += 1
 
         self.jobs_processed += 1
-        self.total_reward += reward
+        self.total_reward   += reward
         done = self.jobs_processed >= self.max_jobs
 
         if not done:
