@@ -51,3 +51,21 @@ class GreedyPriorityBaseline:
             return min(candidates, key=lambda m: (env.cpu_free[m] - job_cpu) + (env.mem_free[m] - job_mem))
         else:
             return candidates[0]
+
+class RoundRobinBaseline:
+    name = "RoundRobin"
+    def __init__(self):
+        self.current_idx = 0
+
+    def select_action(self, obs: np.ndarray, env) -> int:
+        job_cpu = env.current_job[0]
+        job_mem = env.current_job[1]
+        
+        for i in range(env.n_machines):
+            m = (self.current_idx + i) % env.n_machines
+            if env.cpu_free[m] >= job_cpu and env.mem_free[m] >= job_mem:
+                self.current_idx = (m + 1) % env.n_machines
+                return m
+                
+        self.current_idx = (self.current_idx + 1) % env.n_machines
+        return env.n_machines
