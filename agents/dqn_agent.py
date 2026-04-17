@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
-from typing import Optional
+from typing import Optional, Sequence
 
 from utils.replay_buffer import ReplayBuffer
 
@@ -124,13 +124,29 @@ class DQNAgent:
         self.steps             = 0
         self.last_loss         = 0.0
 
-    def select_action(self, state: np.ndarray) -> int:
-        if np.random.random() < self.epsilon:
-            return np.random.randint(self.n_actions)
+    def select_action(
+        self,
+        state: np.ndarray,
+        valid_actions: Optional[Sequence[int]] = None,
+        explore: bool = True,
+    ) -> int:
+        if valid_actions is None:
+            valid_actions_np = np.arange(self.n_actions, dtype=np.int64)
+        else:
+            valid_actions_np = np.array(valid_actions, dtype=np.int64)
+            if valid_actions_np.size == 0:
+                valid_actions_np = np.array([self.n_actions - 1], dtype=np.int64)
+
+        if explore and np.random.random() < self.epsilon:
+            return int(np.random.choice(valid_actions_np))
+
         state_t = torch.FloatTensor(state).unsqueeze(0).to(self.device)
         with torch.no_grad():
-            q = self.online_net(state_t)
-        return int(q.argmax(dim=1).item())
+            q_values = self.online_net(state_t).squeeze(0).cpu().numpy()
+
+        masked_q = np.full(self.n_actions, -np.inf, dtype=np.float32)
+        masked_q[valid_actions_np] = q_values[valid_actions_np]
+        return int(np.argmax(masked_q))
 
     def store(self, state, action, reward, next_state, done):
         # Update running stats before the transition enters the buffer so

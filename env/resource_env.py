@@ -11,7 +11,7 @@ class JobSlot:
     cpu_used: float
     mem_used: float
     priority: float
-    ttl: int  # steps remaining until job completes and frees resources
+    ttl: int
 
 
 class ResourceAllocationEnv(gym.Env):
@@ -45,8 +45,8 @@ class ResourceAllocationEnv(gym.Env):
         self.max_jobs = max_jobs_per_ep
         self.job_min_duration = job_min_duration
         self.job_max_duration = job_max_duration
-        self.rejection_penalty = rejection_penalty  # magnitude
-        self.sla_breach_penalty = sla_breach_penalty  # magnitude (flat)
+        self.rejection_penalty = rejection_penalty 
+        self.sla_breach_penalty = sla_breach_penalty 
 
         self.rng = np.random.default_rng(seed)
 
@@ -89,9 +89,6 @@ class ResourceAllocationEnv(gym.Env):
         self._n_rejected = 0
         self._n_sla_breach = 0
         self._n_completed = 0
-
-        # if self.dataset_loader is not None:
-        #     self.dataset_loader.reset()
 
         self.current_job = self._generate_job()
         return self._obs(), {}
@@ -178,12 +175,6 @@ class ResourceAllocationEnv(gym.Env):
                 self.rng.integers(self.job_min_duration, self.job_max_duration + 1)
             )
             return np.array([cpu_req, mem_req, priority], dtype=np.float32)
-
-        # """Sample a new job's resource requirements and priority."""
-        # cpu_req  = float(self.rng.uniform(0.5, self.cpu_capacity * 0.4))
-        # mem_req  = float(self.rng.uniform(1.0, self.mem_capacity * 0.4))
-        # priority = float(self.rng.choice([1.0, 2.0, 3.0], p=[0.50, 0.35, 0.15]))
-        # return np.array([cpu_req, mem_req, priority], dtype=np.float32)
 
     def _obs(self) -> np.ndarray:
         """Build the normalised observation vector."""

@@ -57,6 +57,9 @@ class RoundRobinBaseline:
     def __init__(self):
         self.current_idx = 0
 
+    def reset(self):
+        self.current_idx = 0
+
     def select_action(self, obs: np.ndarray, env) -> int:
         job_cpu = env.current_job[0]
         job_mem = env.current_job[1]

@@ -10,7 +10,7 @@ matplotlib.use("Agg")
 
 from env.resource_env import ResourceAllocationEnv
 from agents.dqn_agent import DQNAgent
-from baselines.heuristics import FirstFitBaseline, BestFitBaseline, GreedyPriorityBaseline, RandomBaseline
+from baselines.heuristics import FirstFitBaseline, BestFitBaseline, GreedyPriorityBaseline, RandomBaseline, RoundRobinBaseline
 from utils.logger import EpisodeLogger
 
 from utils.data_loader import BorgDatasetLoader
@@ -21,15 +21,15 @@ CONFIG = {
     "mem_capacity": 64.0,
     "max_jobs_per_ep": 200,
 
-    "n_episodes": 1000,
-    "eval_every": 100,
+    "n_episodes": 300,
+    "eval_every": 50,
     "eval_episodes": 20,
 
     "lr": 2e-4,                    # ← was 1e-3 (too high, causes Q explosion)
     "gamma": 0.99,
     "epsilon_start": 1.0,
     "epsilon_end": 0.05,
-    "epsilon_decay_steps": 120_000,
+    "epsilon_decay_steps": 45_000,
     "batch_size": 64,
     "buffer_capacity": 100_000,     
     "target_update_freq": 1000,     
@@ -37,6 +37,16 @@ CONFIG = {
 
     "save_path": "checkpoints/dqn_resource.pt",
 }
+
+
+def _valid_actions(env) -> list[int]:
+    job_cpu = env.current_job[0]
+    job_mem = env.current_job[1]
+    feasible = [
+        m for m in range(env.n_machines)
+        if env.cpu_free[m] >= job_cpu and env.mem_free[m] >= job_mem
+    ]
+    return feasible if feasible else [env.n_machines]
 
 def make_env(seed=None, dataset_loader=None):
     return ResourceAllocationEnv(
@@ -60,7 +70,11 @@ def evaluate_agent(agent: DQNAgent, dataset_loader, n_episodes: int = 20) -> dic
         ep_reward = 0.0
         done = False
         while not done:
-            action = agent.select_action(obs)
+            action = agent.select_action(
+                obs,
+                valid_actions=_valid_actions(env),
+                explore=False,
+            )
             obs, reward, done, _, _ = env.step(action)
             ep_reward += reward
         rewards.append(ep_reward)
@@ -89,6 +103,8 @@ def evaluate_baseline(baseline, dataset_loader, n_episodes: int = 50) -> dict:
     cpu_per = [[] for _ in range(n_machines)]
     mem_per = [[] for _ in range(n_machines)]
     for _ in range(n_episodes):
+        if hasattr(baseline, "reset"):
+            baseline.reset()
         obs, _ = env.reset()
         ep_reward = 0.0
         done = False
@@ -165,7 +181,10 @@ def train():
         done = False
 
         while not done:
-            action = agent.select_action(obs)
+            action = agent.select_action(
+                obs,
+                valid_actions=_valid_actions(env),
+            )
             next_obs, reward, done, _, info = env.step(action)
             agent.store(obs, action, reward, next_obs, done)
             loss = agent.update()
@@ -200,7 +219,13 @@ def train():
     final_dqn = evaluate_agent(agent, borg_eval_loader, 50)
     _print_algo_result("DQN (ours)", final_dqn)
 
-    baselines = [FirstFitBaseline(), BestFitBaseline(), GreedyPriorityBaseline(), RandomBaseline()]
+    baselines = [
+        FirstFitBaseline(),
+        BestFitBaseline(),
+        GreedyPriorityBaseline(),
+        RoundRobinBaseline(),
+        RandomBaseline(),
+    ]
     baseline_results = {}
     for bl in baselines:
         r = evaluate_baseline(bl, borg_eval_loader)
@@ -209,16 +234,6 @@ def train():
 
     _plot_results(ep_rewards, eval_steps, eval_rewards, final_dqn, baseline_results)
     print("\nTraining complete. Plots saved to training/plots/")
-
-    # baselines = [FirstFitBaseline(), BestFitBaseline(), GreedyPriorityBaseline(), RandomBaseline()]
-    # baseline_results = {}
-    # for bl in baselines:
-    #     r = evaluate_baseline(bl)
-    #     baseline_results[bl.name] = r
-    #     print(f"  {bl.name:<16} : reward={r['reward_mean']:.2f}  cpu={r['cpu_util']:.1%}  mem={r['mem_util']:.1%}")
-
-    # _plot_results(ep_rewards, eval_steps, eval_rewards, final_dqn, baseline_results)
-    # print("\nTraining complete. Plots saved to training/plots/")
 
 
 def _print_algo_result(name, r):
