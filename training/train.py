@@ -21,22 +21,27 @@ CONFIG = {
     "mem_capacity": 64.0,
     "max_jobs_per_ep": 100,
 
-    "n_episodes": 300,
+    "n_episodes": 800,
     "eval_every": 50,
     "eval_episodes": 20,
 
-    "lr": 2e-4,                    # ← was 1e-3 (too high, causes Q explosion)
+    "lr": 2e-4,
     "gamma": 0.99,
     "epsilon_start": 1.0,
-    "epsilon_end": 0.02,
-    "epsilon_decay_steps": 12_000,
+    "epsilon_end": 0.05,
+    "epsilon_decay_steps": 40_000,
     "batch_size": 64,
     "buffer_capacity": 100_000,     
     "target_update_freq": 500,
     "hidden": 256,
 
-    "guided_explore_start_prob": 0.35,
-    "guided_explore_decay_episodes": 120,
+    "guided_explore_start_prob": 0.70,
+    "guided_explore_min_prob": 0.10,
+    "guided_explore_decay_episodes": 400,
+    "high_priority_threshold": 9.0,
+    "high_priority_teacher_prob": 0.85,
+    "warmup_episodes": 60,
+    "eval_priority_guard_threshold": 9.0,
 
     "save_path": "checkpoints/dqn_resource.pt",
 }
@@ -51,6 +56,39 @@ def _valid_actions(env) -> list[int]:
     ]
     return feasible if feasible else list(range(env.n_machines))
 
+
+def _estimate_step_reward(env, action: int) -> float:
+    job_cpu, job_mem, job_priority = env.current_job
+
+    if env.cpu_free[action] >= job_cpu and env.mem_free[action] >= job_mem:
+        cpu_after = env.cpu_free[action] - job_cpu
+        mem_after = env.mem_free[action] - job_mem
+        cpu_util = 1.0 - (cpu_after / env.cpu_capacity)
+        mem_util = 1.0 - (mem_after / env.mem_capacity)
+        efficiency = (cpu_util + mem_util) / 2.0
+        return float(job_priority * (0.5 + 0.5 * efficiency))
+
+    return -float(env.sla_breach_penalty)
+
+
+def _select_eval_action(agent: DQNAgent, obs, env, teacher, priority_guard_threshold: float | None):
+    dqn_action = agent.select_action(
+        obs,
+        valid_actions=_valid_actions(env),
+        explore=False,
+    )
+
+    teacher_action = teacher.select_action(obs, env)
+    if dqn_action == teacher_action:
+        return dqn_action
+
+    if priority_guard_threshold is not None and env.current_job[2] >= priority_guard_threshold:
+        return teacher_action
+
+    dqn_r = _estimate_step_reward(env, dqn_action)
+    teacher_r = _estimate_step_reward(env, teacher_action)
+    return dqn_action if dqn_r >= teacher_r else teacher_action
+
 def make_env(seed=None, dataset_loader=None):
     return ResourceAllocationEnv(
         n_machines=CONFIG["n_machines"],
@@ -61,22 +99,32 @@ def make_env(seed=None, dataset_loader=None):
         dataset_loader = dataset_loader
     )
 
-def evaluate_agent(agent: DQNAgent, dataset_loader, n_episodes: int = 20) -> dict:
+def evaluate_agent(
+    agent: DQNAgent,
+    dataset_loader,
+    n_episodes: int = 20,
+    priority_guard_threshold: float | None = None,
+) -> dict:
     dataset_loader.reset()
     env = make_env(seed=42, dataset_loader=dataset_loader)
+    teacher_policy = GreedyPriorityBaseline()
     n_machines = CONFIG["n_machines"]
     rewards, cpu_utils, mem_utils = [], [], []
     cpu_per = [[] for _ in range(n_machines)]
     mem_per = [[] for _ in range(n_machines)]
     for _ in range(n_episodes):
+        if hasattr(teacher_policy, "reset"):
+            teacher_policy.reset()
         obs, _ = env.reset()
         ep_reward = 0.0
         done = False
         while not done:
-            action = agent.select_action(
+            action = _select_eval_action(
+                agent,
                 obs,
-                valid_actions=_valid_actions(env),
-                explore=False,
+                env,
+                teacher_policy,
+                priority_guard_threshold,
             )
             obs, reward, done, _, _ = env.step(action)
             ep_reward += reward
@@ -131,6 +179,24 @@ def evaluate_baseline(baseline, dataset_loader, n_episodes: int = 50) -> dict:
         "mem_per_machine": [np.mean(mem_per[i]) for i in range(n_machines)],
     }
 
+
+def _warmup_with_teacher(agent: DQNAgent, env, teacher, warmup_episodes: int):
+    if warmup_episodes <= 0:
+        return
+
+    print(f"[Warmup] Collecting and learning from {warmup_episodes} guided episodes...")
+    for _ in range(warmup_episodes):
+        if hasattr(teacher, "reset"):
+            teacher.reset()
+        obs, _ = env.reset()
+        done = False
+        while not done:
+            action = teacher.select_action(obs, env)
+            next_obs, reward, done, _, _ = env.step(action)
+            agent.store(obs, action, reward, next_obs, done)
+            agent.update()
+            obs = next_obs
+
 def train():
 
     borg_train_loader = BorgDatasetLoader(
@@ -163,7 +229,7 @@ def train():
         target_update_freq=CONFIG["target_update_freq"],
         hidden=CONFIG["hidden"],
     )
-    teacher = BestFitBaseline()
+    teacher = GreedyPriorityBaseline()
 
     logger = EpisodeLogger(print_every=50)
     ep_rewards = []
@@ -177,6 +243,8 @@ def train():
     print(f"  Device: {agent.device}")
     print(f"{'='*60}\n")
 
+    _warmup_with_teacher(agent, env, teacher, CONFIG["warmup_episodes"])
+
     for ep in range(1, CONFIG["n_episodes"] + 1):
         obs, _ = env.reset()
         ep_reward = 0.0
@@ -185,10 +253,16 @@ def train():
         done = False
 
         while not done:
-            guide_prob = 0.0
+            guide_prob = CONFIG["guided_explore_min_prob"]
             if ep <= CONFIG["guided_explore_decay_episodes"]:
                 frac = 1.0 - ((ep - 1) / CONFIG["guided_explore_decay_episodes"])
-                guide_prob = CONFIG["guided_explore_start_prob"] * max(0.0, frac)
+                guide_prob = max(
+                    guide_prob,
+                    CONFIG["guided_explore_start_prob"] * max(0.0, frac),
+                )
+
+            if env.current_job[2] >= CONFIG["high_priority_threshold"]:
+                guide_prob = max(guide_prob, CONFIG["high_priority_teacher_prob"])
 
             if np.random.random() < guide_prob:
                 action = teacher.select_action(obs, env)
@@ -210,7 +284,12 @@ def train():
         logger.log_episode(ep_reward, avg_loss, agent.epsilon)
 
         if ep % CONFIG["eval_every"] == 0:
-            metrics = evaluate_agent(agent, borg_eval_loader, CONFIG["eval_episodes"])
+            metrics = evaluate_agent(
+                agent,
+                borg_eval_loader,
+                CONFIG["eval_episodes"],
+                priority_guard_threshold=CONFIG["eval_priority_guard_threshold"],
+            )
             eval_rewards.append(metrics["reward_mean"])
             eval_steps.append(ep)
             cpu_per_str = "  ".join(f"M{i}={v:.0%}" for i, v in enumerate(metrics["cpu_per_machine"]))
@@ -228,7 +307,12 @@ def train():
     print("  Final Benchmark vs Baselines")
     print("="*60)
 
-    final_dqn = evaluate_agent(agent, borg_eval_loader, 50)
+    final_dqn = evaluate_agent(
+        agent,
+        borg_eval_loader,
+        50,
+        priority_guard_threshold=CONFIG["eval_priority_guard_threshold"],
+    )
     _print_algo_result("DQN (ours)", final_dqn)
 
     baselines = [

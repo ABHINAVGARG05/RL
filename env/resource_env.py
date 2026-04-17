@@ -47,7 +47,7 @@ class ResourceAllocationEnv(gym.Env):
         self.rng = np.random.default_rng(seed)
 
         self.action_space = spaces.Discrete(n_machines)
-        obs_dim = 2 * n_machines + 3
+        obs_dim = 3 * n_machines + 4
         self.observation_space = spaces.Box(
             low=0.0, high=1.0, shape=(obs_dim,), dtype=np.float32
         )
@@ -117,6 +117,19 @@ class ResourceAllocationEnv(gym.Env):
             mem_util = 1.0 - (self.mem_free[m] / self.mem_capacity)
             efficiency = (cpu_util + mem_util) / 2.0
             reward = job_priority * (0.5 + 0.5 * efficiency)
+
+            # Packing bonus: reward tight fits that leave < 15% headroom
+            cpu_headroom = self.cpu_free[m] / self.cpu_capacity
+            mem_headroom = self.mem_free[m] / self.mem_capacity
+            if cpu_headroom < 0.15 or mem_headroom < 0.15:
+                reward += 0.5 * job_priority
+
+            # Balance penalty: discourage load imbalance across machines
+            cpu_utils_all = 1.0 - (self.cpu_free / self.cpu_capacity)
+            mem_utils_all = 1.0 - (self.mem_free / self.mem_capacity)
+            balance_penalty = float(np.std(cpu_utils_all) + np.std(mem_utils_all))
+            reward -= 0.3 * balance_penalty
+
             info["event"] = "allocated"
             info["machine"] = m
             info["duration"] = duration
@@ -168,9 +181,20 @@ class ResourceAllocationEnv(gym.Env):
             return np.array([cpu_req, mem_req, priority], dtype=np.float32)
 
     def _obs(self) -> np.ndarray:
-        """Build the normalised observation vector."""
+        """Build the normalised observation vector.
+        Layout: [cpu_free(n), mem_free(n), slot_count(n), job_cpu, job_mem, job_pri, progress]
+        Total dim = 3*n_machines + 4
+        """
         cpu_norm = self.cpu_free / self.cpu_capacity
         mem_norm = self.mem_free / self.mem_capacity
+
+        # Slot count per machine (normalised by a reasonable max of 10)
+        slot_counts = np.array(
+            [len(self.slots[m]) / 10.0 for m in range(self.n_machines)],
+            dtype=np.float32,
+        )
+        slot_counts = np.clip(slot_counts, 0.0, 1.0)
+
         job_cpu_norm = np.array(
             [self.current_job[0] / self.cpu_capacity], dtype=np.float32
         )
@@ -178,8 +202,14 @@ class ResourceAllocationEnv(gym.Env):
             [self.current_job[1] / self.mem_capacity], dtype=np.float32
         )
         job_pri_norm = np.array([self.current_job[2] / 11.0], dtype=np.float32)
+
+        # Episode progress (0 → 1)
+        progress = np.array(
+            [self.jobs_processed / max(self.max_jobs, 1)], dtype=np.float32
+        )
+
         return np.concatenate(
-            [cpu_norm, mem_norm, job_cpu_norm, job_mem_norm, job_pri_norm]
+            [cpu_norm, mem_norm, slot_counts, job_cpu_norm, job_mem_norm, job_pri_norm, progress]
         ).astype(np.float32)
 
     def utilization(self) -> dict:

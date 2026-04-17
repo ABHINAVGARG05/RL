@@ -3,10 +3,13 @@ Agents Module
 
 This module contains the RL agents:
 - DQNAgent: Deep Q-Network agent for learning optimal scheduling
-- ReplayBuffer: Experience replay buffer for stable training
+- PrioritizedReplayBuffer: Experience replay buffer for stable training
 """
 
-from utils.replay_buffer import ReplayBuffer
-from agents.dqn_agent import DQNAgent
+from utils.replay_buffer import PrioritizedReplayBuffer
+from agents.dqn_agent import DQNAgent, DuelingDQN
 
-__all__ = ['DQNAgent', 'ReplayBuffer']
+# Backward compatibility for older imports.
+ReplayBuffer = PrioritizedReplayBuffer
+
+__all__ = ['DQNAgent', 'DuelingDQN', 'PrioritizedReplayBuffer', 'ReplayBuffer']

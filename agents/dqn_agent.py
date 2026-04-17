@@ -4,7 +4,7 @@ import torch.optim as optim
 import numpy as np
 from typing import Optional, Sequence
 
-from utils.replay_buffer import ReplayBuffer
+from utils.replay_buffer import PrioritizedReplayBuffer
 
 
 class RunningNormalizer:
@@ -99,10 +99,10 @@ class DQNAgent:
         device: Optional[str] = None,
     ):
         self.n_actions         = n_actions
-        self.n_machines        = max(1, (obs_dim - 3) // 2)
+        self.n_machines        = max(1, (obs_dim - 4) // 3)
         self.gamma             = gamma
         self.batch_size        = batch_size
-        self.target_update_freq = target_update_freq
+        self.tau               = 0.005
 
         self.epsilon       = epsilon_start
         self.epsilon_end   = epsilon_end
@@ -118,9 +118,9 @@ class DQNAgent:
         self.target_net.eval()
 
         self.optimizer = optim.Adam(self.online_net.parameters(), lr=lr)
-        self.loss_fn   = nn.SmoothL1Loss()
+        self.loss_fn   = nn.SmoothL1Loss(reduction='none')
 
-        self.memory            = ReplayBuffer(buffer_capacity)
+        self.memory            = PrioritizedReplayBuffer(buffer_capacity, alpha=0.6)
         self.reward_normalizer = RunningNormalizer()
         self.steps             = 0
         self.last_loss         = 0.0
@@ -128,8 +128,8 @@ class DQNAgent:
     def _valid_actions_from_state(self, state: np.ndarray) -> np.ndarray:
         cpu_free = state[: self.n_machines]
         mem_free = state[self.n_machines : 2 * self.n_machines]
-        job_cpu  = state[2 * self.n_machines]
-        job_mem  = state[2 * self.n_machines + 1]
+        job_cpu  = state[3 * self.n_machines]
+        job_mem  = state[3 * self.n_machines + 1]
 
         feasible = [
             m for m in range(min(self.n_machines, self.n_actions))
@@ -144,8 +144,8 @@ class DQNAgent:
     def _valid_action_mask_from_obs_batch(self, obs_batch: torch.Tensor) -> torch.Tensor:
         cpu_free = obs_batch[:, : self.n_machines]
         mem_free = obs_batch[:, self.n_machines : 2 * self.n_machines]
-        job_cpu  = obs_batch[:, 2 * self.n_machines].unsqueeze(1)
-        job_mem  = obs_batch[:, 2 * self.n_machines + 1].unsqueeze(1)
+        job_cpu  = obs_batch[:, 3 * self.n_machines].unsqueeze(1)
+        job_mem  = obs_batch[:, 3 * self.n_machines + 1].unsqueeze(1)
 
         mask = (cpu_free >= job_cpu) & (mem_free >= job_mem)
 
@@ -195,12 +195,13 @@ class DQNAgent:
         if len(self.memory) < self.batch_size:
             return 0.0
 
-        states, actions, rewards, next_states, dones = self.memory.sample(self.batch_size)
+        states, actions, rewards, next_states, dones, indices, is_weights = self.memory.sample(self.batch_size)
 
         states_t      = torch.FloatTensor(states).to(self.device)
         actions_t     = torch.LongTensor(actions).to(self.device)
         next_states_t = torch.FloatTensor(next_states).to(self.device)
         dones_t       = torch.FloatTensor(dones).to(self.device)
+        is_weights_t  = torch.FloatTensor(is_weights).to(self.device)
 
         # Normalise with the global running mean/std (Welford).
         # The same raw reward always maps to the same normalised value,
@@ -228,16 +229,25 @@ class DQNAgent:
             )
             target_q = rewards_t + self.gamma * next_q * (1 - dones_t)
 
-        loss = self.loss_fn(current_q, target_q)
+        # Element-wise loss weighted by importance-sampling weights
+        elementwise_loss = self.loss_fn(current_q, target_q)
+        loss = (is_weights_t * elementwise_loss).mean()
+
         self.optimizer.zero_grad()
         loss.backward()
         nn.utils.clip_grad_norm_(self.online_net.parameters(), max_norm=10.0)
         self.optimizer.step()
 
+        # Update PER priorities with TD errors
+        td_errors = (current_q - target_q).detach().cpu().numpy()
+        self.memory.update_priorities(indices, td_errors)
+
         self.epsilon = max(self.epsilon_end, self.epsilon - self.epsilon_decay)
         self.steps  += 1
-        if self.steps % self.target_update_freq == 0:
-            self.target_net.load_state_dict(self.online_net.state_dict())
+
+        # Polyak soft update of target network
+        for target_param, online_param in zip(self.target_net.parameters(), self.online_net.parameters()):
+            target_param.data.copy_(self.tau * online_param.data + (1.0 - self.tau) * target_param.data)
 
         self.last_loss = loss.item()
         return self.last_loss
@@ -257,7 +267,7 @@ class DQNAgent:
         print(f"[DQN] Saved checkpoint → {path}")
 
     def load(self, path: str):
-        ckpt = torch.load(path, map_location=self.device)
+        ckpt = torch.load(path, map_location=self.device, weights_only=False)
         self.online_net.load_state_dict(ckpt["online"])
         self.target_net.load_state_dict(ckpt["target"])
         self.optimizer.load_state_dict(ckpt["optimizer"])
