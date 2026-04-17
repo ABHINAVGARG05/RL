@@ -25,7 +25,6 @@ class ResourceAllocationEnv(gym.Env):
         max_jobs_per_ep: int = 200,
         job_min_duration: int = 3,
         job_max_duration: int = 15,
-        rejection_penalty: float = 0.5,
         sla_breach_penalty: float = 2.0,
         seed: Optional[int] = None,
         dataset_loader=None,
@@ -35,9 +34,7 @@ class ResourceAllocationEnv(gym.Env):
         assert n_machines >= 1, "Need at least one machine."
         assert cpu_capacity > 0 and mem_capacity > 0
         assert job_min_duration >= 1 and job_max_duration >= job_min_duration
-        assert (
-            rejection_penalty >= 0 and sla_breach_penalty >= 0
-        ), "Pass positive magnitudes; signs are applied internally."
+        assert sla_breach_penalty >= 0, "Pass positive magnitude; sign is applied internally."
 
         self.n_machines = n_machines
         self.cpu_capacity = cpu_capacity
@@ -45,12 +42,11 @@ class ResourceAllocationEnv(gym.Env):
         self.max_jobs = max_jobs_per_ep
         self.job_min_duration = job_min_duration
         self.job_max_duration = job_max_duration
-        self.rejection_penalty = rejection_penalty 
         self.sla_breach_penalty = sla_breach_penalty 
 
         self.rng = np.random.default_rng(seed)
 
-        self.action_space = spaces.Discrete(n_machines + 1)
+        self.action_space = spaces.Discrete(n_machines)
         obs_dim = 2 * n_machines + 3
         self.observation_space = spaces.Box(
             low=0.0, high=1.0, shape=(obs_dim,), dtype=np.float32
@@ -64,7 +60,6 @@ class ResourceAllocationEnv(gym.Env):
         self.total_reward: float = 0.0
 
         self._n_allocated: int = 0
-        self._n_rejected: int = 0
         self._n_sla_breach: int = 0
         self._n_completed: int = 0
 
@@ -86,7 +81,6 @@ class ResourceAllocationEnv(gym.Env):
         self.total_reward = 0.0
 
         self._n_allocated = 0
-        self._n_rejected = 0
         self._n_sla_breach = 0
         self._n_completed = 0
 
@@ -99,42 +93,39 @@ class ResourceAllocationEnv(gym.Env):
         job_cpu, job_mem, job_priority = self.current_job
         reward = 0.0
         info: dict = {}
+        m = int(action)
 
-        if action == self.n_machines:
-            reward = -(self.rejection_penalty * job_priority)
-            info["event"] = "rejected"
-            self._n_rejected += 1
+        if m < 0 or m >= self.n_machines:
+            raise ValueError(f"Invalid action {action}. Expected 0..{self.n_machines - 1}")
+
+        if self.cpu_free[m] >= job_cpu and self.mem_free[m] >= job_mem:
+            self.cpu_free[m] -= job_cpu
+            self.mem_free[m] -= job_mem
+
+            duration = self.current_job_duration
+
+            self.slots[m].append(
+                JobSlot(
+                    cpu_used=job_cpu,
+                    mem_used=job_mem,
+                    priority=job_priority,
+                    ttl=duration,
+                )
+            )
+
+            cpu_util = 1.0 - (self.cpu_free[m] / self.cpu_capacity)
+            mem_util = 1.0 - (self.mem_free[m] / self.mem_capacity)
+            efficiency = (cpu_util + mem_util) / 2.0
+            reward = job_priority * (0.5 + 0.5 * efficiency)
+            info["event"] = "allocated"
+            info["machine"] = m
+            info["duration"] = duration
+            self._n_allocated += 1
 
         else:
-            m = action
-            if self.cpu_free[m] >= job_cpu and self.mem_free[m] >= job_mem:
-                self.cpu_free[m] -= job_cpu
-                self.mem_free[m] -= job_mem
-
-                duration = self.current_job_duration
-
-                self.slots[m].append(
-                    JobSlot(
-                        cpu_used=job_cpu,
-                        mem_used=job_mem,
-                        priority=job_priority,
-                        ttl=duration,
-                    )
-                )
-
-                cpu_util = 1.0 - (self.cpu_free[m] / self.cpu_capacity)
-                mem_util = 1.0 - (self.mem_free[m] / self.mem_capacity)
-                efficiency = (cpu_util + mem_util) / 2.0
-                reward = job_priority * (0.5 + 0.5 * efficiency)
-                info["event"] = "allocated"
-                info["machine"] = m
-                info["duration"] = duration
-                self._n_allocated += 1
-
-            else:
-                reward = -self.sla_breach_penalty
-                info["event"] = "sla_breach"
-                self._n_sla_breach += 1
+            reward = -self.sla_breach_penalty
+            info["event"] = "sla_breach"
+            self._n_sla_breach += 1
 
         self.jobs_processed += 1
         self.total_reward   += reward
@@ -208,12 +199,10 @@ class ResourceAllocationEnv(gym.Env):
         return {
             "jobs_processed": self.jobs_processed,
             "allocated": self._n_allocated,
-            "rejected": self._n_rejected,
             "sla_breaches": self._n_sla_breach,
             "jobs_completed": self._n_completed,
             "placement_rate": self._n_allocated / total,
             "breach_rate": self._n_sla_breach / total,
-            "rejection_rate": self._n_rejected / total,
             "total_reward": self.total_reward,
         }
 

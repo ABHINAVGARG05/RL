@@ -198,20 +198,6 @@ class Server:
         return completed_tasks
     
     def get_estimated_wait_time(self, task: 'Task') -> int:
-        """
-        Estimate the waiting time for a new task if added to this server.
-        
-        This is a rough estimate based on:
-        - Current queue length
-        - Average processing time of queued tasks
-        - Current task processing progress
-        
-        Args:
-            task: The task to estimate wait time for
-            
-        Returns:
-            Estimated wait time in time steps
-        """
         # Sum remaining time of current tasks
         active_remaining = sum(t.remaining_time for t in self.current_tasks)
         
@@ -223,31 +209,14 @@ class Server:
         return active_remaining + queued_time
     
     def get_state(self) -> Tuple[float, int]:
-        """
-        Get the current state of the server for RL observation.
-        
-        Returns:
-            Tuple of (cpu_utilization, queue_length)
-        """
         return (self.cpu_utilization, self.queue_length)
     
     def get_average_latency(self) -> float:
-        """
-        Get the average latency of completed tasks.
-        
-        Returns:
-            Average latency, or 0.0 if no tasks completed
-        """
         if self.total_tasks_processed == 0:
             return 0.0
         return self.total_latency / self.total_tasks_processed
     
     def reset(self) -> None:
-        """
-        Reset the server to its initial state.
-        
-        Clears all tasks and resets counters for a new episode.
-        """
         self.task_queue.clear()
         self.current_tasks.clear()
         self.current_cpu_usage = 0.0
@@ -255,12 +224,6 @@ class Server:
         self.total_latency = 0
     
     def get_info(self) -> dict:
-        """
-        Get detailed information about the server state.
-        
-        Returns:
-            Dictionary with server statistics
-        """
         return {
             'server_id': self.server_id,
             'cpu_utilization': self.cpu_utilization,
@@ -272,7 +235,6 @@ class Server:
         }
     
     def __repr__(self) -> str:
-        """String representation of the server."""
         return (f"Server(id={self.server_id}, "
                 f"cpu={self.cpu_utilization:.1%}, "
                 f"queue={self.queue_length})")

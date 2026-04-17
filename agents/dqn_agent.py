@@ -99,6 +99,7 @@ class DQNAgent:
         device: Optional[str] = None,
     ):
         self.n_actions         = n_actions
+        self.n_machines        = max(1, (obs_dim - 3) // 2)
         self.gamma             = gamma
         self.batch_size        = batch_size
         self.target_update_freq = target_update_freq
@@ -124,6 +125,42 @@ class DQNAgent:
         self.steps             = 0
         self.last_loss         = 0.0
 
+    def _valid_actions_from_state(self, state: np.ndarray) -> np.ndarray:
+        cpu_free = state[: self.n_machines]
+        mem_free = state[self.n_machines : 2 * self.n_machines]
+        job_cpu  = state[2 * self.n_machines]
+        job_mem  = state[2 * self.n_machines + 1]
+
+        feasible = [
+            m for m in range(min(self.n_machines, self.n_actions))
+            if cpu_free[m] >= job_cpu and mem_free[m] >= job_mem
+        ]
+
+        if self.n_actions > self.n_machines:
+            feasible.extend(range(self.n_machines, self.n_actions))
+
+        return np.array(feasible, dtype=np.int64) if feasible else np.arange(self.n_actions, dtype=np.int64)
+
+    def _valid_action_mask_from_obs_batch(self, obs_batch: torch.Tensor) -> torch.Tensor:
+        cpu_free = obs_batch[:, : self.n_machines]
+        mem_free = obs_batch[:, self.n_machines : 2 * self.n_machines]
+        job_cpu  = obs_batch[:, 2 * self.n_machines].unsqueeze(1)
+        job_mem  = obs_batch[:, 2 * self.n_machines + 1].unsqueeze(1)
+
+        mask = (cpu_free >= job_cpu) & (mem_free >= job_mem)
+
+        if self.n_actions > self.n_machines:
+            extra_mask = torch.ones(
+                (obs_batch.shape[0], self.n_actions - self.n_machines),
+                dtype=torch.bool,
+                device=obs_batch.device,
+            )
+            mask = torch.cat([mask, extra_mask], dim=1)
+
+        no_valid = ~mask.any(dim=1)
+        mask[no_valid] = True
+        return mask
+
     def select_action(
         self,
         state: np.ndarray,
@@ -131,11 +168,11 @@ class DQNAgent:
         explore: bool = True,
     ) -> int:
         if valid_actions is None:
-            valid_actions_np = np.arange(self.n_actions, dtype=np.int64)
+            valid_actions_np = self._valid_actions_from_state(state)
         else:
             valid_actions_np = np.array(valid_actions, dtype=np.int64)
             if valid_actions_np.size == 0:
-                valid_actions_np = np.array([self.n_actions - 1], dtype=np.int64)
+                valid_actions_np = np.arange(self.n_actions, dtype=np.int64)
 
         if explore and np.random.random() < self.epsilon:
             return int(np.random.choice(valid_actions_np))
@@ -180,7 +217,10 @@ class DQNAgent:
         )
 
         with torch.no_grad():
-            next_actions = self.online_net(next_states_t).argmax(dim=1)
+            next_online_q = self.online_net(next_states_t)
+            next_valid_mask = self._valid_action_mask_from_obs_batch(next_states_t)
+            next_online_q = next_online_q.masked_fill(~next_valid_mask, torch.finfo(next_online_q.dtype).min)
+            next_actions = next_online_q.argmax(dim=1)
             next_q       = (
                 self.target_net(next_states_t)
                 .gather(1, next_actions.unsqueeze(1))

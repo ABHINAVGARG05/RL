@@ -19,7 +19,7 @@ CONFIG = {
     "n_machines": 4,
     "cpu_capacity": 16.0,
     "mem_capacity": 64.0,
-    "max_jobs_per_ep": 200,
+    "max_jobs_per_ep": 100,
 
     "n_episodes": 300,
     "eval_every": 50,
@@ -28,12 +28,15 @@ CONFIG = {
     "lr": 2e-4,                    # ← was 1e-3 (too high, causes Q explosion)
     "gamma": 0.99,
     "epsilon_start": 1.0,
-    "epsilon_end": 0.05,
-    "epsilon_decay_steps": 45_000,
+    "epsilon_end": 0.02,
+    "epsilon_decay_steps": 12_000,
     "batch_size": 64,
     "buffer_capacity": 100_000,     
-    "target_update_freq": 1000,     
+    "target_update_freq": 500,
     "hidden": 256,
+
+    "guided_explore_start_prob": 0.35,
+    "guided_explore_decay_episodes": 120,
 
     "save_path": "checkpoints/dqn_resource.pt",
 }
@@ -46,7 +49,7 @@ def _valid_actions(env) -> list[int]:
         m for m in range(env.n_machines)
         if env.cpu_free[m] >= job_cpu and env.mem_free[m] >= job_mem
     ]
-    return feasible if feasible else [env.n_machines]
+    return feasible if feasible else list(range(env.n_machines))
 
 def make_env(seed=None, dataset_loader=None):
     return ResourceAllocationEnv(
@@ -160,6 +163,7 @@ def train():
         target_update_freq=CONFIG["target_update_freq"],
         hidden=CONFIG["hidden"],
     )
+    teacher = BestFitBaseline()
 
     logger = EpisodeLogger(print_every=50)
     ep_rewards = []
@@ -181,10 +185,18 @@ def train():
         done = False
 
         while not done:
-            action = agent.select_action(
-                obs,
-                valid_actions=_valid_actions(env),
-            )
+            guide_prob = 0.0
+            if ep <= CONFIG["guided_explore_decay_episodes"]:
+                frac = 1.0 - ((ep - 1) / CONFIG["guided_explore_decay_episodes"])
+                guide_prob = CONFIG["guided_explore_start_prob"] * max(0.0, frac)
+
+            if np.random.random() < guide_prob:
+                action = teacher.select_action(obs, env)
+            else:
+                action = agent.select_action(
+                    obs,
+                    valid_actions=_valid_actions(env),
+                )
             next_obs, reward, done, _, info = env.step(action)
             agent.store(obs, action, reward, next_obs, done)
             loss = agent.update()
