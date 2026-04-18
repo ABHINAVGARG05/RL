@@ -1,6 +1,14 @@
 import sys
 import os
+import logging
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(levelname)-8s  %(name)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
+_log = logging.getLogger("train")
 
 import numpy as np
 import torch
@@ -32,7 +40,6 @@ CONFIG = {
     "epsilon_decay_steps": 40_000,
     "batch_size": 64,
     "buffer_capacity": 100_000,     
-    "target_update_freq": 500,
     "hidden": 256,
 
     "guided_explore_start_prob": 0.70,
@@ -145,7 +152,6 @@ def evaluate_agent(
     }
 
 
-# AFTER
 def evaluate_baseline(baseline, dataset_loader, n_episodes: int = 50) -> dict:
     dataset_loader.reset()
     env = make_env(seed=42, dataset_loader=dataset_loader)
@@ -219,6 +225,7 @@ def train():
     agent = DQNAgent(
         obs_dim=obs_dim,
         n_actions=n_actions,
+        n_machines=CONFIG["n_machines"],
         lr=CONFIG["lr"],
         gamma=CONFIG["gamma"],
         epsilon_start=CONFIG["epsilon_start"],
@@ -226,7 +233,6 @@ def train():
         epsilon_decay_steps=CONFIG["epsilon_decay_steps"],
         batch_size=CONFIG["batch_size"],
         buffer_capacity=CONFIG["buffer_capacity"],
-        target_update_freq=CONFIG["target_update_freq"],
         hidden=CONFIG["hidden"],
     )
     teacher = GreedyPriorityBaseline()

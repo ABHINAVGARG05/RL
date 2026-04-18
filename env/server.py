@@ -1,20 +1,7 @@
-"""
-Server Module
-
-This module defines the Server class representing computational servers
-in the cloud environment that process tasks.
-
-Each server has:
-- CPU capacity: Maximum CPU resources available
-- Task queue: Queue of tasks waiting to be processed
-- Current CPU usage: Resources currently being used
-"""
-
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 from collections import deque
 
-# Import Task for type hints (avoid circular import with TYPE_CHECKING)
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from env.task import Task
@@ -22,36 +9,10 @@ if TYPE_CHECKING:
 
 @dataclass
 class Server:
-    """
-    Represents a computational server in the cloud environment.
-    
-    A server processes tasks from its queue, using CPU resources.
-    Tasks are processed in FIFO order, and the server tracks its
-    utilization and queue state.
-    
-    Attributes:
-        server_id: Unique identifier for the server
-        cpu_capacity: Maximum CPU capacity (e.g., 100 units)
-        max_queue_length: Maximum tasks allowed in queue
-        
-    Internal State:
-        task_queue: FIFO queue of tasks waiting to be processed
-        current_tasks: List of tasks currently being processed
-        current_cpu_usage: CPU resources currently in use
-        total_tasks_processed: Counter of completed tasks
-        total_latency: Sum of latencies for completed tasks
-    
-    Example:
-        server = Server(server_id=0, cpu_capacity=100.0)
-        server.add_task(task)
-        server.step(current_time=5)
-    """
-    
     server_id: int
     cpu_capacity: float = 100.0
     max_queue_length: int = 20
     
-    # Internal state (not passed to __init__)
     task_queue: deque = field(default_factory=deque, repr=False)
     current_tasks: List = field(default_factory=list, repr=False)
     current_cpu_usage: float = field(default=0.0, repr=False)
@@ -75,49 +36,22 @@ class Server:
     
     @property
     def cpu_utilization(self) -> float:
-        """
-        Get the current CPU utilization as a fraction [0, 1].
-        
-        Returns:
-            CPU usage divided by capacity, clamped to [0, 1]
-        """
         return min(1.0, self.current_cpu_usage / self.cpu_capacity)
     
     @property
     def is_overloaded(self) -> bool:
-        """
-        Check if the server is overloaded.
-        
-        A server is considered overloaded if:
-        - CPU utilization > 90% OR
-        - Queue is at maximum capacity
-        
-        Returns:
-            True if server is overloaded
-        """
         return (self.cpu_utilization > 0.9 or 
                 self.queue_length >= self.max_queue_length)
     
     @property
     def available_cpu(self) -> float:
-        """Get the available CPU capacity."""
         return max(0.0, self.cpu_capacity - self.current_cpu_usage)
     
     @property
     def can_accept_task(self) -> bool:
-        """Check if the server can accept a new task."""
         return self.queue_length < self.max_queue_length
     
     def add_task(self, task: 'Task') -> bool:
-        """
-        Add a task to the server's queue.
-        
-        Args:
-            task: The task to add
-            
-        Returns:
-            True if task was added, False if queue is full
-        """
         if not self.can_accept_task:
             return False
         
@@ -126,15 +60,6 @@ class Server:
         return True
     
     def _start_next_task(self, current_time: int) -> bool:
-        """
-        Start processing the next task from the queue if possible.
-        
-        Args:
-            current_time: Current simulation time step
-            
-        Returns:
-            True if a task was started, False otherwise
-        """
         if len(self.task_queue) == 0:
             return False
         
@@ -153,59 +78,35 @@ class Server:
         return False
     
     def step(self, current_time: int) -> List['Task']:
-        """
-        Advance the server by one time step.
-        
-        This method:
-        1. Processes all active tasks
-        2. Removes completed tasks
-        3. Starts new tasks from queue if capacity available
-        
-        Args:
-            current_time: Current simulation time step
-            
-        Returns:
-            List of tasks that completed this step
-        """
         completed_tasks = []
         tasks_to_remove = []
         
-        # Process all active tasks
         for task in self.current_tasks:
             if task.process(current_time):
-                # Task completed
                 completed_tasks.append(task)
                 tasks_to_remove.append(task)
                 self.total_tasks_processed += 1
                 
-                # Track latency
                 latency = task.get_latency()
                 if latency is not None:
                     self.total_latency += latency
         
-        # Remove completed tasks and free CPU
         for task in tasks_to_remove:
             self.current_tasks.remove(task)
             self.current_cpu_usage -= task.cpu_requirement
         
-        # Ensure CPU usage doesn't go negative due to floating point errors
         self.current_cpu_usage = max(0.0, self.current_cpu_usage)
         
-        # Try to start new tasks from queue
         while self._start_next_task(current_time):
             pass
         
         return completed_tasks
     
     def get_estimated_wait_time(self, task: 'Task') -> int:
-        # Sum remaining time of current tasks
         active_remaining = sum(t.remaining_time for t in self.current_tasks)
         
-        # Sum processing time of queued tasks
         queued_time = sum(t.processing_time for t in self.task_queue)
         
-        # Simple estimate: assume sequential processing
-        # In reality, tasks may process in parallel if CPU allows
         return active_remaining + queued_time
     
     def get_state(self) -> Tuple[float, int]:

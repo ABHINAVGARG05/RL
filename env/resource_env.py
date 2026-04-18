@@ -1,7 +1,7 @@
 import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
-from typing import Optional
+from typing import Optional, Protocol, Tuple
 from dataclasses import dataclass, field
 
 
@@ -12,6 +12,17 @@ class JobSlot:
     mem_used: float
     priority: float
     ttl: int
+
+
+class DatasetLoader(Protocol):
+    """Interface that any dataset loader passed to ResourceAllocationEnv must satisfy."""
+    def next_job(self) -> Tuple[np.ndarray, int]:
+        """Return (job_features [cpu, mem, priority], duration_steps)."""
+        ...
+
+    def reset(self) -> None:
+        """Reset the loader back to the start of the dataset."""
+        ...
 
 
 class ResourceAllocationEnv(gym.Env):
@@ -27,14 +38,16 @@ class ResourceAllocationEnv(gym.Env):
         job_max_duration: int = 15,
         sla_breach_penalty: float = 2.0,
         seed: Optional[int] = None,
-        dataset_loader=None,
+        dataset_loader: Optional[DatasetLoader] = None,
     ):
         super().__init__()
 
-        assert n_machines >= 1, "Need at least one machine."
-        assert cpu_capacity > 0 and mem_capacity > 0
-        assert job_min_duration >= 1 and job_max_duration >= job_min_duration
-        assert sla_breach_penalty >= 0, "Pass positive magnitude; sign is applied internally."
+        assert n_machines >= 1, "n_machines must be >= 1."
+        assert cpu_capacity > 0, "cpu_capacity must be positive."
+        assert mem_capacity > 0, "mem_capacity must be positive."
+        assert job_min_duration >= 1, "job_min_duration must be >= 1."
+        assert job_max_duration >= job_min_duration, "job_max_duration must be >= job_min_duration."
+        assert sla_breach_penalty >= 0, "Pass a positive magnitude; the sign is applied internally."
 
         self.n_machines = n_machines
         self.cpu_capacity = cpu_capacity
@@ -118,10 +131,10 @@ class ResourceAllocationEnv(gym.Env):
             efficiency = (cpu_util + mem_util) / 2.0
             reward = job_priority * (0.5 + 0.5 * efficiency)
 
-            # Packing bonus: reward tight fits that leave < 15% headroom
+            # Packing bonus: reward tight fits that leave < 15% headroom on BOTH dimensions
             cpu_headroom = self.cpu_free[m] / self.cpu_capacity
             mem_headroom = self.mem_free[m] / self.mem_capacity
-            if cpu_headroom < 0.15 or mem_headroom < 0.15:
+            if cpu_headroom < 0.15 and mem_headroom < 0.15:
                 reward += 0.5 * job_priority
 
             # Balance penalty: discourage load imbalance across machines
@@ -201,7 +214,8 @@ class ResourceAllocationEnv(gym.Env):
         job_mem_norm = np.array(
             [self.current_job[1] / self.mem_capacity], dtype=np.float32
         )
-        job_pri_norm = np.array([self.current_job[2] / 11.0], dtype=np.float32)
+        # Priorities are sampled from {1.0, 2.0, 3.0}; normalise to [0.09, 1.0] range.
+        job_pri_norm = np.array([self.current_job[2] / 3.0], dtype=np.float32)
 
         # Episode progress (0 → 1)
         progress = np.array(
@@ -239,7 +253,7 @@ class ResourceAllocationEnv(gym.Env):
     def render(self):
         u = self.utilization()
         job = self.current_job
-        busy = sum(1 for s in self.slots if len(s) > 0)
+        busy = sum(1 for machine_slots in self.slots if len(machine_slots) > 0)
         print(
             f"[Jobs {self.jobs_processed:4d}/{self.max_jobs}] "
             f"CPU={u['cpu']:.1%}  MEM={u['mem']:.1%}  "

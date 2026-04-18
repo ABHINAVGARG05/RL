@@ -1,33 +1,13 @@
-"""
-Configuration Module for RL Cloud Scheduler
-
-This module contains all hyperparameters and configuration settings
-for the cloud environment simulation and DQN training.
-
-The configuration is organized into logical groups:
-- Environment settings (servers, tasks)
-- DQN hyperparameters (learning rate, network architecture)
-- Training settings (episodes, batch size)
-- Reward shaping parameters
-"""
-
 from dataclasses import dataclass, field
 from typing import List, Tuple
 import torch
 
-
 @dataclass
-class ServerConfig:
-    """Configuration for server parameters in the cloud environment."""
-    
-    # Number of servers in the cloud cluster
+class ServerConfig:    
     num_servers: int = 5
-    
-    # CPU capacity range for each server (min, max)
-    # Servers will have random capacity within this range
+
     cpu_capacity_range: Tuple[float, float] = (100.0, 100.0)
     
-    # Maximum queue length before server is considered overloaded
     max_queue_length: int = 20
 
 
@@ -35,13 +15,10 @@ class ServerConfig:
 class TaskConfig:
     """Configuration for task generation parameters."""
     
-    # CPU requirement range for tasks (min, max)
     cpu_requirement_range: Tuple[float, float] = (10.0, 50.0)
     
-    # Processing time range in time steps (min, max)
     processing_time_range: Tuple[int, int] = (1, 10)
     
-    # Probability of a new task arriving at each time step
     arrival_probability: float = 0.7
 
 
@@ -49,11 +26,8 @@ class TaskConfig:
 class DQNConfig:
     """Configuration for Deep Q-Network hyperparameters."""
     
-    # Learning rate for Adam optimizer
     learning_rate: float = 1e-3
-    
-    # Discount factor (gamma) for future rewards
-    # Higher values prioritize long-term rewards
+
     gamma: float = 0.99
     
     # Epsilon-greedy exploration parameters
@@ -119,18 +93,6 @@ class RewardConfig:
 
 @dataclass
 class Config:
-    """
-    Master configuration class that combines all config groups.
-    
-    This provides a single access point for all configuration parameters
-    used throughout the project.
-    
-    Example usage:
-        config = Config()
-        print(config.server.num_servers)
-        print(config.dqn.learning_rate)
-    """
-    
     server: ServerConfig = field(default_factory=ServerConfig)
     task: TaskConfig = field(default_factory=TaskConfig)
     dqn: DQNConfig = field(default_factory=DQNConfig)
@@ -160,25 +122,8 @@ default_config = Config()
 
 
 def get_config(**kwargs) -> Config:
-    """
-    Factory function to create a configuration with custom parameters.
-    
-    Args:
-        **kwargs: Override parameters for any configuration group.
-                  Use nested dict format, e.g., server={'num_servers': 10}
-    
-    Returns:
-        Config: Configuration instance with custom parameters
-    
-    Example:
-        config = get_config(
-            server={'num_servers': 10},
-            dqn={'learning_rate': 0.001}
-        )
-    """
     config = Config()
     
-    # Apply overrides
     for key, value in kwargs.items():
         if hasattr(config, key) and isinstance(value, dict):
             sub_config = getattr(config, key)

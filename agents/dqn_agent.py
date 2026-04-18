@@ -1,3 +1,4 @@
+import logging
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -5,6 +6,8 @@ import numpy as np
 from typing import Optional, Sequence
 
 from utils.replay_buffer import PrioritizedReplayBuffer
+
+logger = logging.getLogger(__name__)
 
 
 class RunningNormalizer:
@@ -87,6 +90,7 @@ class DQNAgent:
         self,
         obs_dim: int,
         n_actions: int,
+        n_machines: int,
         lr: float = 1e-3,
         gamma: float = 0.99,
         epsilon_start: float = 1.0,
@@ -94,12 +98,11 @@ class DQNAgent:
         epsilon_decay_steps: int = 20_000,
         batch_size: int = 64,
         buffer_capacity: int = 50_000,
-        target_update_freq: int = 500,
         hidden: int = 256,
         device: Optional[str] = None,
     ):
         self.n_actions         = n_actions
-        self.n_machines        = max(1, (obs_dim - 4) // 3)
+        self.n_machines        = n_machines
         self.gamma             = gamma
         self.batch_size        = batch_size
         self.tau               = 0.005
@@ -203,10 +206,6 @@ class DQNAgent:
         dones_t       = torch.FloatTensor(dones).to(self.device)
         is_weights_t  = torch.FloatTensor(is_weights).to(self.device)
 
-        # Normalise with the global running mean/std (Welford).
-        # The same raw reward always maps to the same normalised value,
-        # keeping Bellman targets consistent across updates and preventing
-        # sign flips that per-batch normalisation can introduce.
         rewards_t = torch.FloatTensor(
             [self.reward_normalizer.normalize(r) for r in rewards]
         ).to(self.device)
@@ -235,7 +234,7 @@ class DQNAgent:
 
         self.optimizer.zero_grad()
         loss.backward()
-        nn.utils.clip_grad_norm_(self.online_net.parameters(), max_norm=10.0)
+        nn.utils.clip_grad_norm_(self.online_net.parameters(), max_norm=1.0)
         self.optimizer.step()
 
         # Update PER priorities with TD errors
@@ -264,7 +263,7 @@ class DQNAgent:
             },
             path,
         )
-        print(f"[DQN] Saved checkpoint → {path}")
+        logger.info("Saved checkpoint → %s", path)
 
     def load(self, path: str):
         ckpt = torch.load(path, map_location=self.device, weights_only=False)
@@ -275,4 +274,4 @@ class DQNAgent:
         self.steps   = ckpt["steps"]
         if "normalizer" in ckpt:
             self.reward_normalizer.load_state_dict(ckpt["normalizer"])
-        print(f"[DQN] Loaded checkpoint ← {path}")
+        logger.info("Loaded checkpoint ← %s", path)

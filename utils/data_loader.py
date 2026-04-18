@@ -1,7 +1,3 @@
-"""
-Handles reading the data and feed it in sequential way to the environment.
-"""
-
 import pandas as pd
 import numpy as np
 
@@ -10,10 +6,6 @@ class BorgDatasetLoader:
     def __init__(
         self, file_path: str, scale_cpu: float = 16.0, scale_mem: float = 64.0
     ):
-        """
-        scale_cpu: To scale normalized Borg CPU up to env capacity
-        scale_mem: To scale normalized Borg MEM up to env capacity
-        """
         print(f"Loading Borg dataset from {file_path}")
         self.data = pd.read_csv(file_path)
 
@@ -24,9 +16,9 @@ class BorgDatasetLoader:
         self.curr_indx = 0
         self.max_indx = len(self.data)
 
-    def next_job(self) -> tuple:  # return (job_features, duration)
+    def next_job(self) -> tuple: 
         if self.curr_indx >= self.max_indx:
-            self.curr_indx = 0  # if we run out of data, loop back
+            self.curr_indx = 0
 
         row = self.data.iloc[self.curr_indx]
         self.curr_indx += 1
